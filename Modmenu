@@ -1,474 +1,152 @@
-// SS2 Scripts v2.0.0 — Player Mod
-// Loaded from GitHub, uses window._SS2* globals set by game injection
-// Features: FPS, Aimbot, ESP, Autoloot, Autorun, Steal Nickname, Skins, Mod Menu
+// SS2 Scripts v2.0 — GitHub-hosted Mod Menu
+// This file is fetched by the game injection. Upload to your GitHub repo as "Modmenu"
+// Core functions available: _ss2Chat(text), _ss2Loot(), _ss2Send([opcode,...]), _ss2GetPlayers(), _ss2Toast(msg,color)
 (function() {
   'use strict';
-  if (!window._SS2Chat || !window._SS2Vars) {
-    console.error('[SS2] Core hooks not found!');
-    return;
-  }
+  if (!window._ss2Chat) { console.error('[SS2] Core not loaded'); return; }
 
-  var V = window._SS2Vars;
-  var getState = window._SS2State;
-  var getPlayer = window._SS2Player;
-  var getPA = window._SS2PA;
-  var chat = window._SS2Chat;
-  var loot = window._SS2Loot;
-  var send = window._SS2Send;
-  var net = window._SS2Net;
+  var SKINS = window._ss2Skins || [];
+  var getPlayers = window._ss2GetPlayers || function(){ return []; };
 
-  // ===================== STATE =====================
-  var MOD = {
-    aimbot: false,
-    esp: false,
-    autoloot: false,
-    autorun: false,
-    showFps: true,
-    showIds: true,
-    skinIdx: 0,
-    menuOpen: false
-  };
-
-  var aimTarget = null;
-  var skinImg = null;
-  var SKINS = [
-    {name:"Default",url:""},
-    {name:"SS2",url:"https://raw.githubusercontent.com/user-attachments/assets/d3ddcbb5-f4f9-49fb-ae81-dfeaca223254"},
-    {name:"Skin 1",url:"https://raw.githubusercontent.com/user-attachments/assets/ccbfd19e-21bc-4e6a-88fd-df7397b4bd5c"},
-    {name:"Skin 2",url:"https://raw.githubusercontent.com/user-attachments/assets/abedab63-2f2e-48c6-aff1-d660cbb289a0"},
-    {name:"Skin 3",url:"https://raw.githubusercontent.com/user-attachments/assets/202e7461-39c8-450e-bf6f-2e71a8dd029b"},
-    {name:"Skin 4",url:"https://raw.githubusercontent.com/user-attachments/assets/0f76b1a5-d191-48fb-a574-e002e29e42e3"},
-    {name:"Skin 5",url:"https://raw.githubusercontent.com/user-attachments/assets/a8d4d124-ef1e-4722-bd05-f6280b7dd769"},
-    {name:"King",url:"https://raw.githubusercontent.com/user-attachments/assets/575c892f-d178-4b36-817e-fc0ef0e4b742"},
-    {name:"Black",url:"https://raw.githubusercontent.com/user-attachments/assets/4bdad7b2-dd11-4cc8-bfbb-6e148cae7f20"},
-    {name:"Black Alt",url:"https://raw.githubusercontent.com/user-attachments/assets/424fb667-8bb9-4796-b955-8e47d33e0a06"},
-    {name:"Bad",url:"https://raw.githubusercontent.com/user-attachments/assets/9b1a7eda-d4e1-4818-b854-3af0fbc1361e"}
-  ];
-
-  // ===================== HELPERS =====================
-  function getPlayers() {
-    var list = [];
-    try {
-      var pa = getPA();
-      if (!pa) return list;
-      for (var i = 0; i < pa.length; i++) {
-        var e = pa[i];
-        if (e && e[V.NF2] && e[V.NF2] !== 0) {
-          list.push({id: e[getState()[V.s] ? e.id : i], idx: i, name: e[V.NF] || e[V.NF2], x: e.x || 0, y: e.y || 0, raw: e});
-        }
-      }
-    } catch(ex) {}
-    return list;
-  }
-
-  function getPlayersV2() {
-    var list = [];
-    try {
-      var pa = getPA();
-      var s = window[V.s] || getState()[V.s]; // string table might not be on window
-      if (!pa) return list;
-      for (var i = 0; i < pa.length; i++) {
-        var e = pa[i];
-        if (!e || !e[V.NF2] || e[V.NF2] === 0) continue;
-        var obj = {idx: i, name: e[V.NF] || e[V.NF2], raw: e};
-        // Try to get id/x/y from string table indices
-        try { obj.id = e[s[V.ID]]; } catch(ex) { obj.id = i; }
-        try { obj.x = e[s[V.X]]; } catch(ex) { obj.x = 0; }
-        try { obj.y = e[s[V.Y]]; } catch(ex) { obj.y = 0; }
-        list.push(obj);
-      }
-    } catch(ex) {}
-    return list;
-  }
-
-  // ===================== FPS COUNTER =====================
-  var fpsDiv = document.createElement('div');
-  fpsDiv.style.cssText = 'position:fixed;top:5px;right:10px;z-index:99997;font:bold 11px monospace;color:#fff;background:rgba(0,0,0,0.5);padding:2px 8px;border-radius:4px;pointer-events:none;';
-  fpsDiv.textContent = 'FPS: --';
-  document.body.appendChild(fpsDiv);
-  var fpsCount = 0, fpsTime = performance.now();
-  (function fpsLoop() {
-    fpsCount++;
-    var now = performance.now();
-    if (now - fpsTime >= 1000) {
-      fpsDiv.textContent = MOD.showFps ? 'FPS: ' + fpsCount : '';
-      fpsCount = 0;
-      fpsTime = now;
-    }
-    requestAnimationFrame(fpsLoop);
-  })();
-
-  // ===================== SKIN HOOK =====================
-  var _origDraw = CanvasRenderingContext2D.prototype.drawImage;
-  CanvasRenderingContext2D.prototype.drawImage = function(img) {
-    if (MOD.skinIdx > 0 && skinImg && skinImg.complete && img && img.src && typeof img.src === 'string' && img.src.indexOf('day-skin') !== -1) {
-      arguments[0] = skinImg;
-    }
-    return _origDraw.apply(this, arguments);
-  };
-
-  // ===================== AUTOLOOT + AUTORUN =====================
-  setInterval(function() {
-    try {
-      if (MOD.autoloot) loot();
-      if (MOD.autorun) {
-        document.dispatchEvent(new KeyboardEvent('keydown', {keyCode:16, which:16, key:'Shift', code:'ShiftLeft', shiftKey:true, bubbles:true}));
-      }
-    } catch(e) {}
-  }, 10);
-
-  // ===================== AIMBOT + ESP =====================
-  var espCanvas = document.createElement('canvas');
-  espCanvas.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:99990;';
-  document.body.appendChild(espCanvas);
-
-  setInterval(function() {
-    try {
-      var g = document.getElementById('can');
-      if (!g) return;
-      var r = g.getBoundingClientRect();
-      espCanvas.width = r.width;
-      espCanvas.height = r.height;
-      espCanvas.style.left = r.left + 'px';
-      espCanvas.style.top = r.top + 'px';
-      espCanvas.style.width = r.width + 'px';
-      espCanvas.style.height = r.height + 'px';
-      var ctx = espCanvas.getContext('2d');
-      ctx.clearRect(0, 0, espCanvas.width, espCanvas.height);
-
-      var p = getPlayer();
-      if (!p) return;
-      var pa = getPA();
-      if (!pa) return;
-      var s = getState()[V.s] || window[V.s];
-
-      var px, py;
-      try { px = p[s[V.X]]; py = p[s[V.Y]]; } catch(ex) { return; }
-      var sc = r.width / 1280;
-      var cx = r.width / 2, cy = r.height / 2;
-
-      var closest = null, closestDist = Infinity;
-
-      for (var i = 0; i < pa.length; i++) {
-        var e = pa[i];
-        if (!e || !e[V.NF2] || e[V.NF2] === 0) continue;
-        var ex, ey, eid;
-        try { ex = e[s[V.X]]; ey = e[s[V.Y]]; eid = e[s[V.ID]]; } catch(err) { continue; }
-        if (ex === px && ey === py) continue; // skip self
-
-        var sx = cx + (ex - px) * sc;
-        var sy = cy + (ey - py) * sc;
-        var dist = Math.sqrt((ex-px)*(ex-px) + (ey-py)*(ey-py));
-
-        // ESP lines
-        if (MOD.esp) {
-          ctx.beginPath();
-          ctx.moveTo(cx, cy);
-          ctx.lineTo(sx, sy);
-          ctx.strokeStyle = '#00ff00';
-          ctx.lineWidth = 1;
-          ctx.stroke();
-
-          // Player info
-          ctx.font = 'bold 9px monospace';
-          ctx.fillStyle = '#00ff00';
-          ctx.fillText('#' + eid + ' ' + (e[V.NF] || '') + ' [' + Math.floor(dist/100) + ']', sx - 20, sy - 10);
-        }
-
-        // Player ID overlay
-        if (MOD.showIds && !MOD.esp) {
-          if (sx > -50 && sx < r.width + 50 && sy > -50 && sy < r.height + 50) {
-            ctx.font = 'bold 9px monospace';
-            ctx.fillStyle = '#00ff00';
-            ctx.shadowColor = '#000';
-            ctx.shadowBlur = 2;
-            ctx.fillText('#' + eid, sx - 10, sy - 15);
-            ctx.shadowBlur = 0;
-          }
-        }
-
-        if (dist < closestDist) {
-          closestDist = dist;
-          closest = {x: ex, y: ey, sx: sx, sy: sy, id: eid};
-        }
-      }
-
-      // Aimbot target line
-      if (MOD.aimbot && closest) {
-        aimTarget = closest;
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(closest.sx, closest.sy);
-        ctx.strokeStyle = '#ff0000';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        // Send angle packet
-        var dx = closest.x - px;
-        var dy = closest.y - py;
-        var angle = Math.atan2(dy, dx);
-        var degrees = Math.floor(angle * 180 / Math.PI);
-        send([6, degrees]);
-      } else {
-        aimTarget = null;
-      }
-    } catch(e) {}
-  }, 50);
-
-  // ===================== STEAL NICKNAME =====================
-  window._SS2StealNick = function(playerId) {
-    try {
-      var pa = getPA();
-      var s = getState()[V.s] || window[V.s];
-      for (var i = 0; i < pa.length; i++) {
-        var e = pa[i];
-        if (!e || !e[V.NF2] || e[V.NF2] === 0) continue;
-        if (e[s[V.ID]] == playerId) {
-          var name = e[V.NF] || e[V.NF2] || 'Unknown';
-          chat(name);
-          return name;
-        }
-      }
-    } catch(ex) {}
-    return null;
-  };
-
-  // ===================== KEYBINDS =====================
-  document.addEventListener('keydown', function(ev) {
-    if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'SELECT')) return;
-    if (ev.keyCode === 69) { MOD.aimbot = !MOD.aimbot; showToast('Aimbot: ' + (MOD.aimbot ? 'ON' : 'OFF'), MOD.aimbot ? '#f44' : '#888'); }
-    if (ev.keyCode === 86) { MOD.esp = !MOD.esp; showToast('ESP: ' + (MOD.esp ? 'ON' : 'OFF'), MOD.esp ? '#0f0' : '#888'); }
-    if (ev.keyCode === 88) { MOD.autoloot = !MOD.autoloot; showToast('Autoloot: ' + (MOD.autoloot ? 'ON' : 'OFF'), MOD.autoloot ? '#4f4' : '#888'); }
-    if (ev.keyCode === 190) { MOD.autorun = !MOD.autorun; showToast('Autorun: ' + (MOD.autorun ? 'ON' : 'OFF'), MOD.autorun ? '#4f4' : '#888'); }
-    if (ev.keyCode === 113) toggleMenu(); // F2
-  }, true);
-
-  function showToast(msg, color) {
-    var t = document.createElement('div');
-    t.style.cssText = 'position:fixed;top:30px;left:50%;transform:translateX(-50%);z-index:99999;font:bold 12px monospace;color:' + (color||'#fff') + ';background:rgba(0,0,0,0.8);padding:4px 14px;border-radius:5px;pointer-events:none;';
-    t.textContent = msg;
-    document.body.appendChild(t);
-    setTimeout(function() { if (t.parentNode) t.parentNode.removeChild(t); }, 1500);
-  }
-
-  // ===================== STATUS BAR =====================
-  var statusBar = document.createElement('div');
-  statusBar.style.cssText = 'position:fixed;bottom:5px;right:10px;z-index:99997;font:bold 9px monospace;color:#4f4;pointer-events:none;text-shadow:0 0 2px #000;';
-  document.body.appendChild(statusBar);
-  setInterval(function() {
-    var parts = [];
-    if (MOD.aimbot) parts.push('AIM');
-    if (MOD.esp) parts.push('ESP');
-    if (MOD.autoloot) parts.push('LOOT');
-    if (MOD.autorun) parts.push('RUN');
-    statusBar.textContent = parts.length ? 'SS2 | ' + parts.join(' | ') : 'SS2';
-  }, 200);
-
-  // ===================== MOD MENU (F2) =====================
+  // ===== MENU =====
   var menuEl = document.createElement('div');
   menuEl.id = 'ss2menu';
   menuEl.style.cssText = 'display:none;position:fixed;top:0;left:0;width:100%;height:100%;z-index:999999;background:rgba(0,0,0,0.6);font-family:Segoe UI,Arial,sans-serif;user-select:none;';
 
-  function toggleMenu() {
-    MOD.menuOpen = !MOD.menuOpen;
-    menuEl.style.display = MOD.menuOpen ? 'flex' : 'none';
-    if (MOD.menuOpen) refreshPlayers();
-  }
-
-  // Build menu HTML
   var box = document.createElement('div');
-  box.style.cssText = 'display:flex;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:750px;height:520px;background:#0d0d0d;border:1px solid #ff4444;border-radius:8px;overflow:hidden;';
+  box.style.cssText = 'display:flex;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:700px;height:480px;background:#0d0d0d;border:1px solid #ff4444;border-radius:8px;overflow:hidden;';
 
   // Sidebar
   var sb = document.createElement('div');
-  sb.style.cssText = 'width:145px;background:#0a0a0a;border-right:1px solid #1a1a1a;display:flex;flex-direction:column;';
+  sb.style.cssText = 'width:140px;background:#0a0a0a;border-right:1px solid #1a1a1a;display:flex;flex-direction:column;';
+  sb.innerHTML = '<div style="padding:12px 10px;text-align:center;border-bottom:1px solid #1a1a1a;"><div style="color:#ff4444;font-size:18px;font-weight:900;">SS2</div><div style="color:#444;font-size:8px;">SCRIPTS v2.0</div></div>';
 
-  // Logo
-  var logo = document.createElement('div');
-  logo.style.cssText = 'padding:12px 10px;text-align:center;border-bottom:1px solid #1a1a1a;';
-  logo.innerHTML = '<div style="color:#ff4444;font-size:18px;font-weight:900;">SS2</div><div style="color:#444;font-size:8px;">SCRIPTS v' + V.VERSION + '</div>';
-  sb.appendChild(logo);
-
-  var tabNames = ['Player', 'Steal Nick', 'Skins', 'Settings'];
+  var tabNames = ['Toggles', 'Steal Nick', 'Skins', 'Info'];
   var tabEls = [], panels = [];
 
-  for (var ti = 0; ti < tabNames.length; ti++) {
+  tabNames.forEach(function(name, ti) {
     var tb = document.createElement('div');
     tb.style.cssText = 'padding:8px 10px;color:' + (ti===0?'#ff4444':'#666') + ';font-size:10px;cursor:pointer;' + (ti===0?'font-weight:600;background:#1a0808;border-left:2px solid #ff4444;':'border-left:2px solid transparent;');
-    tb.textContent = tabNames[ti];
+    tb.textContent = name;
     tb.setAttribute('data-tab', '' + ti);
     tb.addEventListener('click', function() {
       var idx = parseInt(this.getAttribute('data-tab'));
-      for (var j = 0; j < tabEls.length; j++) {
-        tabEls[j].style.color = j===idx ? '#ff4444' : '#666';
-        tabEls[j].style.fontWeight = j===idx ? '600' : '400';
-        tabEls[j].style.background = j===idx ? '#1a0808' : 'transparent';
-        tabEls[j].style.borderLeft = j===idx ? '2px solid #ff4444' : '2px solid transparent';
+      tabEls.forEach(function(el, j) {
+        el.style.color = j===idx ? '#ff4444' : '#666';
+        el.style.fontWeight = j===idx ? '600' : '400';
+        el.style.background = j===idx ? '#1a0808' : 'transparent';
+        el.style.borderLeft = j===idx ? '2px solid #ff4444' : '2px solid transparent';
         panels[j].style.display = j===idx ? 'block' : 'none';
-      }
-      if (idx === 1) refreshPlayers();
+      });
+      if (idx === 1) refreshSteal();
     });
     tabEls.push(tb);
     sb.appendChild(tb);
-  }
+  });
 
-  // Keybinds info
-  var kbDiv = document.createElement('div');
-  kbDiv.style.cssText = 'padding:8px 10px;margin-top:auto;border-top:1px solid #1a1a1a;color:#555;font-size:7px;line-height:1.6;';
-  kbDiv.innerHTML = 'E — Aimbot<br>V — ESP Lines<br>X — Autoloot<br>. — Autorun<br>F2 — Menu';
-  sb.appendChild(kbDiv);
-
+  // Keybinds
+  var kb = document.createElement('div');
+  kb.style.cssText = 'padding:8px 10px;margin-top:auto;border-top:1px solid #1a1a1a;color:#555;font-size:7px;line-height:1.6;';
+  kb.innerHTML = 'E — Aimbot<br>V — ESP<br>X — Autoloot<br>. — Autorun<br>F2 — Menu';
+  sb.appendChild(kb);
   box.appendChild(sb);
 
   // Right panel
   var rp = document.createElement('div');
   rp.style.cssText = 'flex:1;display:flex;flex-direction:column;';
-
-  // Header
   var hd = document.createElement('div');
   hd.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 14px;border-bottom:1px solid #1a1a1a;';
-  hd.innerHTML = '<span style="color:#888;font-size:11px;">SS2 Player Mod</span>';
+  hd.innerHTML = '<span style="color:#888;font-size:11px;">Player Mod</span>';
   var closeBtn = document.createElement('div');
   closeBtn.style.cssText = 'cursor:pointer;color:#555;font-size:14px;font-weight:bold;';
   closeBtn.textContent = 'X';
-  closeBtn.addEventListener('click', toggleMenu);
+  closeBtn.addEventListener('click', function() { menuEl.style.display = 'none'; });
   hd.appendChild(closeBtn);
   rp.appendChild(hd);
 
-  // ===== TAB 0: Player (Toggles) =====
+  // TAB 0: Toggles
   var p0 = document.createElement('div');
   p0.style.cssText = 'flex:1;padding:14px 18px;overflow-y:auto;';
 
-  function makeToggle(label, key, color) {
+  function mkToggle(label, globalKey, color, hotkey) {
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 12px;margin-bottom:4px;background:#111;border-radius:5px;border:1px solid #1a1a1a;';
-    var lbl = document.createElement('span');
-    lbl.style.cssText = 'color:#ccc;font-size:11px;';
-    lbl.textContent = label;
-    row.appendChild(lbl);
+    row.innerHTML = '<span style="color:#ccc;font-size:11px;">' + label + (hotkey ? ' <span style="color:#555;font-size:8px;">[' + hotkey + ']</span>' : '') + '</span>';
     var btn = document.createElement('div');
-    btn.style.cssText = 'padding:3px 14px;border-radius:3px;font-size:9px;font-weight:600;cursor:pointer;' + (MOD[key] ? 'background:#1a3311;border:1px solid '+color+';color:'+color+';' : 'background:#111;border:1px solid #333;color:#666;');
-    btn.textContent = MOD[key] ? 'ON' : 'OFF';
-    btn.addEventListener('click', function() {
-      MOD[key] = !MOD[key];
-      this.textContent = MOD[key] ? 'ON' : 'OFF';
-      this.style.background = MOD[key] ? '#1a3311' : '#111';
-      this.style.borderColor = MOD[key] ? color : '#333';
-      this.style.color = MOD[key] ? color : '#666';
-    });
+    btn.className = 'ss2tog';
+    btn.setAttribute('data-key', globalKey);
+    function upd() {
+      var on = !!window[globalKey];
+      btn.textContent = on ? 'ON' : 'OFF';
+      btn.style.cssText = 'padding:3px 14px;border-radius:3px;font-size:9px;font-weight:600;cursor:pointer;' + (on ? 'background:#1a3311;border:1px solid '+color+';color:'+color+';' : 'background:#111;border:1px solid #333;color:#666;');
+    }
+    btn.addEventListener('click', function() { window[globalKey] = !window[globalKey]; upd(); });
+    upd();
     row.appendChild(btn);
-    return row;
+    p0.appendChild(row);
+    // Update on interval
+    setInterval(upd, 500);
   }
 
-  p0.appendChild(makeToggle('Aimbot [E]', 'aimbot', '#f44'));
-  p0.appendChild(makeToggle('ESP Lines [V]', 'esp', '#0f0'));
-  p0.appendChild(makeToggle('Autoloot [X]', 'autoloot', '#4f4'));
-  p0.appendChild(makeToggle('Autorun [.]', 'autorun', '#48f'));
-  p0.appendChild(makeToggle('Show FPS', 'showFps', '#ff0'));
-  p0.appendChild(makeToggle('Show Player IDs', 'showIds', '#0f0'));
+  mkToggle('Aimbot', '_ss2Aim', '#f44', 'E');
+  mkToggle('ESP Lines', '_ss2Esp', '#0f0', 'V');
+  mkToggle('Autoloot', '_ss2AutoLoot', '#4f4', 'X');
+  mkToggle('Autorun', '_ss2AutoRun', '#48f', '.');
   panels.push(p0);
   rp.appendChild(p0);
 
-  // ===== TAB 1: Steal Nickname =====
+  // TAB 1: Steal Nick
   var p1 = document.createElement('div');
   p1.style.cssText = 'flex:1;padding:14px 18px;overflow-y:auto;display:none;';
-  var stealHdr = document.createElement('div');
-  stealHdr.style.cssText = 'color:#ddd;font-size:13px;font-weight:600;margin-bottom:10px;';
-  stealHdr.textContent = 'Steal Nickname';
-  p1.appendChild(stealHdr);
-  var stealDesc = document.createElement('div');
-  stealDesc.style.cssText = 'color:#666;font-size:9px;margin-bottom:10px;';
-  stealDesc.textContent = 'Click a player to send their name in chat as yours.';
-  p1.appendChild(stealDesc);
-  var playerListEl = document.createElement('div');
-  p1.appendChild(playerListEl);
+  p1.innerHTML = '<div style="color:#ddd;font-size:13px;font-weight:600;margin-bottom:6px;">Steal Nickname</div><div style="color:#666;font-size:9px;margin-bottom:10px;">Click a player to send their name in chat.</div>';
+  var stealList = document.createElement('div');
+  stealList.id = 'ss2steal';
+  p1.appendChild(stealList);
   panels.push(p1);
   rp.appendChild(p1);
 
-  function refreshPlayers() {
-    playerListEl.textContent = '';
-    try {
-      var pa = getPA();
-      if (!pa) return;
-      var s_tbl;
-      try { s_tbl = getState()[V.s]; } catch(ex) {}
-      if (!s_tbl) try { s_tbl = window[V.s]; } catch(ex) {}
-
-      for (var i = 0; i < pa.length; i++) {
-        var e = pa[i];
-        if (!e || !e[V.NF2] || e[V.NF2] === 0) continue;
-        var eid = '?', ename = e[V.NF] || e[V.NF2] || '?';
-        try { eid = e[s_tbl[V.ID]]; } catch(ex) { eid = i; }
-
-        var row = document.createElement('div');
-        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 10px;margin-bottom:3px;background:#111;border-radius:4px;border:1px solid #1a1a1a;cursor:pointer;';
-        row.setAttribute('data-id', '' + eid);
-        row.setAttribute('data-name', ename);
-
-        var info = document.createElement('span');
-        info.style.cssText = 'color:#ddd;font-size:10px;';
-        info.textContent = '#' + eid + ' ' + ename;
-        row.appendChild(info);
-
-        var stealBtn = document.createElement('span');
-        stealBtn.style.cssText = 'color:#f84;font-size:9px;font-weight:600;';
-        stealBtn.textContent = 'STEAL';
-        row.appendChild(stealBtn);
-
-        row.addEventListener('click', function() {
-          var name = this.getAttribute('data-name');
-          chat(name);
-          this.style.background = '#1a3311';
-          var self = this;
-          setTimeout(function() { self.style.background = '#111'; }, 500);
-          showToast('Stole: ' + name, '#f84');
-        });
-        playerListEl.appendChild(row);
-      }
-    } catch(ex) {}
+  function refreshSteal() {
+    stealList.textContent = '';
+    var ps = getPlayers();
+    ps.forEach(function(pl) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 10px;margin-bottom:3px;background:#111;border-radius:4px;border:1px solid #1a1a1a;cursor:pointer;';
+      row.setAttribute('data-name', pl.name);
+      row.innerHTML = '<span style="color:#ddd;font-size:10px;">#' + pl.id + ' ' + pl.name + '</span><span style="color:#f84;font-size:9px;font-weight:600;">STEAL</span>';
+      row.addEventListener('click', function() {
+        window._ss2Chat(this.getAttribute('data-name'));
+        this.style.background = '#1a3311';
+        var self = this;
+        setTimeout(function() { self.style.background = '#111'; }, 400);
+        if (window._ss2Toast) window._ss2Toast('Stole: ' + this.getAttribute('data-name'), '#f84');
+      });
+      stealList.appendChild(row);
+    });
+    if (ps.length === 0) stealList.innerHTML = '<div style="color:#555;font-size:10px;padding:20px;text-align:center;">No players found. Join a game first.</div>';
   }
 
-  // ===== TAB 2: Skins =====
+  // TAB 2: Skins
   var p2 = document.createElement('div');
   p2.style.cssText = 'flex:1;padding:14px 18px;overflow-y:auto;display:none;';
-  var skinHdr = document.createElement('div');
-  skinHdr.style.cssText = 'color:#ddd;font-size:13px;font-weight:600;margin-bottom:10px;';
-  skinHdr.textContent = 'Skin Changer';
-  p2.appendChild(skinHdr);
-  var skinName = document.createElement('div');
-  skinName.style.cssText = 'color:#f84;font-size:12px;font-weight:600;text-align:center;margin-bottom:10px;';
-  skinName.textContent = 'Default';
-  p2.appendChild(skinName);
-
+  p2.innerHTML = '<div style="color:#ddd;font-size:13px;font-weight:600;margin-bottom:10px;">Skin Changer</div>';
   var skinGrid = document.createElement('div');
   skinGrid.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;';
   SKINS.forEach(function(sk, ski) {
     var skb = document.createElement('div');
-    skb.style.cssText = 'width:70px;height:70px;background:#111;border:2px solid ' + (ski === MOD.skinIdx ? '#ff4444' : '#1a1a1a') + ';border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-direction:column;';
+    skb.style.cssText = 'width:70px;height:70px;background:#111;border:2px solid ' + (ski === (window._ss2SkinIdx||0) ? '#ff4444' : '#1a1a1a') + ';border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-direction:column;';
     skb.setAttribute('data-ski', '' + ski);
-    var skimg = document.createElement('img');
-    skimg.style.cssText = 'max-width:50px;max-height:50px;image-rendering:pixelated;';
-    skimg.src = sk.url || 'img/day-skin0.png';
-    skb.appendChild(skimg);
-    var skn = document.createElement('div');
-    skn.style.cssText = 'color:#888;font-size:7px;text-align:center;margin-top:2px;';
-    skn.textContent = sk.name;
-    skb.appendChild(skn);
+    skb.innerHTML = '<img style="max-width:50px;max-height:50px;image-rendering:pixelated;" src="' + (sk.url || 'img/day-skin0.png') + '"><div style="color:#888;font-size:7px;text-align:center;margin-top:2px;">' + sk.name + '</div>';
     skb.addEventListener('click', function() {
       var idx = parseInt(this.getAttribute('data-ski'));
-      MOD.skinIdx = idx;
-      skinName.textContent = SKINS[idx].name;
-      // Update borders
-      var allSk = skinGrid.children;
-      for (var j = 0; j < allSk.length; j++) allSk[j].style.borderColor = j===idx ? '#ff4444' : '#1a1a1a';
-      // Load skin
+      window._ss2SkinIdx = idx;
+      Array.from(skinGrid.children).forEach(function(el, j) { el.style.borderColor = j===idx ? '#ff4444' : '#1a1a1a'; });
       if (SKINS[idx].url) {
-        skinImg = new Image();
-        skinImg.crossOrigin = 'anonymous';
-        skinImg.src = SKINS[idx].url;
+        window._ss2SkinImg = new Image();
+        window._ss2SkinImg.crossOrigin = 'anonymous';
+        window._ss2SkinImg.src = SKINS[idx].url;
       } else {
-        skinImg = null;
-        MOD.skinIdx = 0;
+        window._ss2SkinImg = null;
+        window._ss2SkinIdx = 0;
       }
     });
     skinGrid.appendChild(skb);
@@ -477,45 +155,30 @@
   panels.push(p2);
   rp.appendChild(p2);
 
-  // ===== TAB 3: Settings =====
+  // TAB 3: Info
   var p3 = document.createElement('div');
   p3.style.cssText = 'flex:1;padding:14px 18px;overflow-y:auto;display:none;';
-
-  var setHdr = document.createElement('div');
-  setHdr.style.cssText = 'color:#ddd;font-size:13px;font-weight:600;margin-bottom:14px;';
-  setHdr.textContent = 'Settings & Info';
-  p3.appendChild(setHdr);
-
-  var infoItems = [
-    ['Version', V.VERSION],
-    ['String Table', V.s],
-    ['Zoom', '-1.5 (was -0.35)'],
-    ['Loot Range', '50000 (was 12000)'],
-    ['Loot Opcode', '' + V.LOOT_OPCODE],
-    ['Chat Opcode', '' + V.CHAT_OPCODE],
-    ['Auto-Update', 'Via GitHub fetch']
-  ];
-  infoItems.forEach(function(item) {
-    var row = document.createElement('div');
-    row.style.cssText = 'display:flex;justify-content:space-between;padding:5px 10px;margin-bottom:3px;background:#111;border-radius:4px;border:1px solid #1a1a1a;';
-    row.innerHTML = '<span style="color:#888;font-size:9px;">' + item[0] + '</span><span style="color:#ddd;font-size:9px;font-family:monospace;">' + item[1] + '</span>';
-    p3.appendChild(row);
-  });
-
-  var links = document.createElement('div');
-  links.style.cssText = 'margin-top:14px;padding:8px;background:#111;border-radius:4px;border:1px solid #1a1a1a;';
-  links.innerHTML = '<div style="color:#888;font-size:8px;margin-bottom:4px;">LINKS</div><a href="https://discord.gg/zetaa" target="_blank" style="color:#48f;font-size:9px;text-decoration:none;">Discord</a> &nbsp; <a href="https://www.youtube.com/@ZETATOOLS-w5o" target="_blank" style="color:#f44;font-size:9px;text-decoration:none;">YouTube</a> &nbsp; <a href="https://ko-fi.com/s/bb91173a6c" target="_blank" style="color:#f84;font-size:9px;text-decoration:none;">Ko-fi</a>';
-  p3.appendChild(links);
-
+  var V = window._ss2Vars || {};
+  p3.innerHTML = '<div style="color:#ddd;font-size:13px;font-weight:600;margin-bottom:14px;">Info</div>' +
+    [['Version','2.0'],['Zoom','-1.5'],['Loot Range','50000'],['Auto-Update','GitHub fetch']].map(function(item) {
+      return '<div style="display:flex;justify-content:space-between;padding:5px 10px;margin-bottom:3px;background:#111;border-radius:4px;border:1px solid #1a1a1a;"><span style="color:#888;font-size:9px;">' + item[0] + '</span><span style="color:#ddd;font-size:9px;font-family:monospace;">' + item[1] + '</span></div>';
+    }).join('') +
+    '<div style="margin-top:14px;padding:8px;background:#111;border-radius:4px;border:1px solid #1a1a1a;"><div style="color:#888;font-size:8px;margin-bottom:4px;">LINKS</div><a href="https://discord.gg/zetaa" target="_blank" style="color:#48f;font-size:9px;text-decoration:none;">Discord</a> &nbsp; <a href="https://www.youtube.com/@ZETATOOLS-w5o" target="_blank" style="color:#f44;font-size:9px;text-decoration:none;">YouTube</a> &nbsp; <a href="https://ko-fi.com/s/bb91173a6c" target="_blank" style="color:#f84;font-size:9px;text-decoration:none;">Ko-fi</a></div>';
   panels.push(p3);
   rp.appendChild(p3);
 
   box.appendChild(rp);
   menuEl.appendChild(box);
-  menuEl.addEventListener('click', function(e) { if (e.target === menuEl) toggleMenu(); });
+  menuEl.addEventListener('click', function(e) { if (e.target === menuEl) menuEl.style.display = 'none'; });
   document.body.appendChild(menuEl);
 
-  // ===================== LOADED =====================
-  showToast('SS2 Scripts v' + V.VERSION + ' loaded!', '#ff4444');
-  console.log('[SS2] Player mod loaded. F2=Menu E=Aim V=ESP X=Loot .=Run');
+  // F2 toggle
+  document.addEventListener('keydown', function(ev) {
+    if (ev.keyCode === 113) {
+      menuEl.style.display = menuEl.style.display === 'none' ? 'flex' : 'none';
+      if (menuEl.style.display === 'flex') refreshSteal();
+    }
+  }, true);
+
+  console.log('[SS2] Menu loaded!');
 })();
